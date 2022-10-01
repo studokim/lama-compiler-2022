@@ -41,7 +41,7 @@ fun initEvalEnv (insns) {
             esac
           }
         }) $ [emptyMap (compare), insns];
-  
+
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
@@ -52,10 +52,28 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+fun evalSMInsn (c, i) {
+  var stack, state, world;
+  stack := c[0];
+  state := c[1];
+  world := c[2];
+  case i of
+    READ      -> case readWorld(world) of [varname, world] -> [varname : stack, state, world] esac
+  | WRITE     -> case stack of varname : stack -> [stack, state, writeWorld(varname, world)] esac
+  | BINOP (s) -> case stack of ex2 : ex1 : stack -> [evalBinop(s, ex1, ex2) : stack, state, world] esac
+  | LD    (x) -> [state(x) : stack, state, world]
+  | ST    (x) -> case stack of varname : stack -> [stack, state <- [x, varname], world] esac
+  | CONST (n) -> [n : stack, state, world]
+  esac
+}
+
+-- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (c, insns) {
+  case insns of
+    {} -> c
+  | ins : insns -> eval(evalSMInsn(c, ins), insns)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,7 +114,11 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Const (c) -> {CONST(c)}
+  | Var (varname) -> {LD(varname)}
+  | Binop (op, ex1, ex2) -> compileExpr(ex1) +++ compileExpr(ex2) +++ {BINOP(op)}
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
@@ -120,7 +142,7 @@ public fun compileSM (stmt) {
   -- Returns a triple:
   --    boolean flag indicating if "lab" was used
   --    updated environment
-  --    code buffer  
+  --    code buffer
   fun compile (lab, env, stmt) {
     case stmt of
       Skip           -> [false, env, emptyBuffer ()]
@@ -139,7 +161,7 @@ public fun compileSM (stmt) {
         esac
     | _              -> failure ("compileSM not implemented\n")
     esac
-  }  
+  }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
