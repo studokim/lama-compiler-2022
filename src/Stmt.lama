@@ -30,6 +30,22 @@ fun eval (c, stmt) {
         [c[0] <- [varname, newWorld[0]], newWorld[1]]
       )
     | Write (ex) -> [c[0], writeWorld(evalExpr(c[0], ex), c[1])]
+    | While (expr, stmt) ->
+        while evalExpr(c[0], expr) do
+          c:=eval(c, stmt)
+        od;
+        c
+    | DoWhile (stmt, expr) ->
+        do
+        c := eval(c, stmt)
+        while evalExpr(c[0], expr) od;
+        c
+    | If (expr, stmt1, stmt2) ->
+        if evalExpr(c[0], expr) then
+          eval(c, stmt1)
+        else
+          eval(c, stmt2)
+        fi
   esac
 }
 

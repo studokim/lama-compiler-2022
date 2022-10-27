@@ -52,27 +52,49 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
-fun evalSMInsn (c, i) {
-  var stack, state, world;
-  stack := c[0];
-  state := c[1];
-  world := c[2];
+fun evalSMInsn ([env, stack, state, world], i) {
   case i of
-    READ      -> case readWorld(world) of [varname, world] -> [varname : stack, state, world] esac
-  | WRITE     -> case stack of varname : stack -> [stack, state, writeWorld(varname, world)] esac
-  | BINOP (s) -> case stack of ex2 : ex1 : stack -> [evalBinop(s, ex1, ex2) : stack, state, world] esac
-  | LD    (x) -> [state(x) : stack, state, world]
-  | ST    (x) -> case stack of varname : stack -> [stack, state <- [x, varname], world] esac
-  | CONST (n) -> [n : stack, state, world]
+    READ      -> case readWorld(world) of [varname, world] -> [env, varname : stack, state, world] esac
+  | WRITE     -> case stack of varname : stack -> [env, stack, state, writeWorld(varname, world)] esac
+  | BINOP (s) -> case stack of ex2 : ex1 : stack -> [env, evalBinop(s, ex1, ex2) : stack, state, world] esac
+  | LD    (x) -> [env, state(x) : stack, state, world]
+  | ST    (x) -> case stack of varname : stack -> [env, stack, state <- [x, varname], world] esac
+  | CONST (n) -> [env, n : stack, state, world]
+  | LABEL (s) -> [env, stack, state, world]
   esac
 }
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
+fun eval ([env, stack, state, world], insns) {
   case insns of
-    {} -> c
-  | ins : insns -> eval(evalSMInsn(c, ins), insns)
+    {} -> [env, stack, state, world]
+  | ins : insns ->
+      case ins of
+        CJMP  (c, l) ->
+          case c of
+            "z" ->
+              case stack of
+                h : tl ->
+                  if h == 0 then
+                    eval(env, [tl, state, world], env.fromLabel(l))
+                  else
+                    eval(env, [tl, state, world], insns)
+                  fi
+              esac
+          | "nz" ->
+              case stack of
+                h : tl ->
+                  if h != 0 then
+                    eval(env, [tl, state, world], env.fromLabel(l))
+                  else
+                    eval(env, [tl, state, world], insns)
+                  fi
+              esac
+          esac
+      | JMP (l) -> eval(env, [stack, state, world], env.fromLabel(l))
+      | _ -> eval(evalSMInsn([env, stack, state, world], ins), insns)
+      esac
   esac
 }
 
@@ -159,7 +181,31 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+        | While (e, s) -> case env.genLabels (2) of
+          [lab1, lab2, env] ->
+            case compile (lab2, env, s) of
+              [lab2Used, env, code] ->
+                  [false, env, singletonBuffer (JMP (lab2)) <+ LABEL (lab1) <+> code <+ LABEL (lab2) <+> compileExpr(e) <+ CJMP ("nz", lab1)]
+            esac
+        esac
+    | If (e, s1, s2) -> case env.genLabels (2) of
+          [lab1, lab2, env] ->
+            case compile (lab2, env, s1) of
+              [lab2Used, env, code1] ->
+                  case compile (lab2, env, s2) of
+                    [lab2Used, env, code2] ->
+                        [false, env, compileExpr(e) <+ CJMP ("z", lab1) <+> code1 <+ JMP (lab2) <+ LABEL (lab1) <+> code2 <+ LABEL (lab2)]
+              esac
+            esac
+        esac
+    | DoWhile (s, e) -> case env.genLabel of
+          [lab1, env] ->
+             case compile (lab1, env, s) of
+                [labUsed, env, code] ->
+                    [false, env, singletonBuffer (LABEL (lab1)) <+> code <+> compileExpr(e) <+ CJMP ("nz", lab1)]
+             esac
+        esac
+    | _ -> failure ("compileSM not implemented\n")
     esac
   }
 
