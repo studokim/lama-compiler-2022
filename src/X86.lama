@@ -284,7 +284,8 @@ fun suffix (op) {
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      var text = showSMInsn (i);
+      var code = scode <+ Meta ("# " ++ text ++ "\n");
       case i of
         READ ->
           case env.allocate of
@@ -300,41 +301,95 @@ fun compile (env, code) {
           esac
       | LD    (x) ->
           case env.allocate of
-            [s, env] -> [env, code <+> move(env.loc(x), s)]
+            [s, env] -> case env.addGlobal (x) of
+                env -> [env, code <+> move (env.loc(x), s)]
+            esac
           esac
-      | ST    (x) ->
-          case env.addGlobal(x).pop of
-            [s, env] -> [env, code <+> move (s, env.loc(x))]
+      | ST (x) ->
+          case env.pop of
+            [s, env] -> case env.addGlobal (x) of
+                env -> [env, code <+> move (s, env.loc (x))]
+            esac
           esac
-      | BINOP (op) ->
-          case env.pop2 of
-            [x, y, env] ->
-            case env.allocate of
-                [s, env] ->
-                case op of
-                    "+"  -> [env, code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, s)]
-                  | "-"  -> [env, code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, s)]
-                  | "*"  -> [env, code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, s)]
-                  | "&&" -> [env, code <+ Mov (y, edx) <+ Binop ("*",  x, edx) <+ Binop ("cmp", L (0), edx) <+ Mov (L (0), eax) <+ Set ("ne", "%al") <+ Mov (eax, s)]
-                  | "!!" -> [env, code <+ Mov (y, edx) <+ Binop ("!!", x, edx) <+ Binop ("cmp", L (0), edx) <+ Mov (L (0), eax) <+ Set ("ne", "%al") <+ Mov (eax, s)]
-                  | "/"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, s)]
-                  | "%"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, s)]
-                  | _    -> [env, code <+ Mov (x, eax) <+ Binop ("cmp", eax, y)<+ Mov(L(0), eax)  <+ Set (suffix (op), "%al") <+ Mov (eax, s)]
-                  esac
-              esac
-          esac
+      | BINOP (op) -> compileBinop(env, code, op)
       | JMP (s) ->
           [env, code <+ Jmp (s)]
       | LABEL (l) ->
           [env, code <+ Label (l)]
-      | CJMP (s, l) ->
-          case env.pop of
-            [x, env] ->
-                  [env, code <+> move(x, eax) <+ Binop ("&&", eax, eax) <+ CJmp (s, l)]
-          esac
+      | CJMP (c, l) ->
+            case env.pop of
+              [s, env] ->
+                [env, code <+> toBool(s) <+ CJmp(c, l)]
+            esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)}
+
+
+fun cmp(a, b, op, res) {
+    var base = if stackOpnd(a) && stackOpnd(b) then
+      move(a, eax) <+ Binop ("cmp", eax, b)
+    else
+      singletonBuffer (Binop ("cmp", a, b))
+    fi;
+    base  <+> move(L (0), eax) <+ Set (suffix (op), "%al") <+> move(eax, res)
+}
+
+fun toBool(a) {
+    move (L(0), eax) <+> cmp(a, eax, "!=", a)
+}
+
+fun compileBinop(env, code, op) {
+  fun basic(a, b, op, res) {
+    if stackOpnd (a) then
+      move(b, eax) <+ Binop (op, a, eax) <+> move(eax, res)
+    else
+      singletonBuffer (Binop (op, a, b)) <+> move(b, res)
+    fi
+  }
+
+  fun div(a, b, op, res) {
+    var reg = case op of
+      "/" -> eax
+    | "%" -> edx
+    esac;
+    if stackOpnd (a) then
+      move(b, eax) <+> move(a, edx) <+ Cltd <+ IDiv (edx) <+> move(reg, res)
+    else
+      move(b, eax) <+ Cltd <+ IDiv (a) <+> move(reg, res)
+    fi
+  }
+
+  fun logic(a, b, op, res) {
+    toBool(a) <+> toBool(b) <+ Binop(op, a, eax) <+> move(eax, res)
+  }
+
+  fun select(op) {
+    case op of
+      "+"  -> basic
+    | "*"  -> basic
+    | "-"  -> basic
+    | "/"  -> div
+    | "%"  -> div
+    | "<"  -> cmp
+    | "<=" -> cmp
+    | ">=" -> cmp
+    | ">"  -> cmp
+    | "==" -> cmp
+    | "!=" -> cmp
+    | "&&" -> logic
+    | "!!" -> logic
+    | _    -> failure("Operation %s is not yet implemented\n", op)
+    esac
+  }
+
+  case env.pop2 of
+    [a, b, env] -> case env.allocate of
+      [res, env] ->
+        [env, code <+> select(op) (a, b, op, res)]
+    esac
+  esac
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -357,8 +412,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
-                    ).stringcat);
+                    )
+                   ).stringcat);
 
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
